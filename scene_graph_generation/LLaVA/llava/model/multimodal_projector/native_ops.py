@@ -36,6 +36,24 @@ def segment_csr(src: torch.Tensor, indptr: torch.Tensor, reduce: str = "sum") ->
     num_segments = indptr.numel() - 1
     lengths = indptr[1:] - indptr[:-1]
 
+    # Fail loudly and informatively on a malformed indptr. torch.repeat_interleave would
+    # otherwise raise a bare "repeats can not be negative", which says nothing about which
+    # input was wrong -- and that error, seen on a remote host, is very hard to chase.
+    if bool((lengths < 0).any()):
+        bad = int((lengths < 0).sum())
+        first = int(torch.nonzero(lengths < 0)[0])
+        raise ValueError(
+            f"segment_csr: indptr must be non-decreasing, got {bad} negative segment "
+            f"length(s); first at index {first} "
+            f"(indptr[{first}]={int(indptr[first])} > indptr[{first+1}]={int(indptr[first+1])}). "
+            f"indptr dtype={indptr.dtype}, numel={indptr.numel()}, "
+            f"src shape={tuple(src.shape)}, device={src.device}."
+        )
+    if int(indptr[-1]) > src.shape[0]:
+        raise ValueError(
+            f"segment_csr: indptr[-1]={int(indptr[-1])} exceeds src rows={src.shape[0]}"
+        )
+
     # Segment id per row, e.g. lengths [2,3] -> [0,0,1,1,1].
     seg = torch.repeat_interleave(
         torch.arange(num_segments, device=src.device), lengths

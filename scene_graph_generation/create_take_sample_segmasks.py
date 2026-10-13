@@ -103,7 +103,12 @@ def _segmask_helper(take_name, model_name, USE_GT=False, OUTPUT_RES=32):
         take_path = MMOR_DATA_ROOT_PATH / take_folder
 
     if dataset_type == "MMOR":
-        json_path = Path('MM-OR_data') / 'take_jsons' / f'{take_name}.json'
+        # Was Path('MM-OR_data'), i.e. relative to the process CWD, which only resolves
+        # from the repo root -- while `from helpers.configurations import ...` at the top
+        # of this file requires CWD to be scene_graph_generation/. The two assumptions
+        # cannot both hold. Every other path in this function already uses the configured
+        # root, so use it here too.
+        json_path = MMOR_DATA_ROOT_PATH / 'take_jsons' / f'{take_name}.json'
         # Read MMOR/Simstation JSON file for timestamps and image paths
         with json_path.open() as f:
             take_json = json.load(f)
@@ -112,7 +117,7 @@ def _segmask_helper(take_name, model_name, USE_GT=False, OUTPUT_RES=32):
             timestamps = sorted(timestamps.items())
     elif dataset_type == "4DOR":
         internal_take_name = f'export_holistic_take{int(take_name.replace("_4DOR", ""))}_processed'
-        json_path = Path('4D-OR_data') / internal_take_name / 'timestamp_to_pcd_and_frames_list.json'
+        json_path = OR_4D_DATA_ROOT_PATH / internal_take_name / 'timestamp_to_pcd_and_frames_list.json'
         # Read 4D-OR JSON file for timestamps and image paths
         with json_path.open() as f:
             take_json = json.load(f)
@@ -141,7 +146,17 @@ def _segmask_helper(take_name, model_name, USE_GT=False, OUTPUT_RES=32):
                         # segmask = cv2.cvtColor(get_rgb_mask(segmask), cv2.COLOR_BGR2RGB)
                         segmasks.append(segmask)
                 else:
-                    all_camera_parts = (model_name / 'inference' / 'pan_pred').glob(f'{take_name}_{c_idx}_*')
+                    # Released predictions first: MM-OR ships the panoptic predictions as
+                    # panoptic_seg_<cam>_for_val/ inside each take, already in the
+                    # TRACK_TO_METAINFO colour palette. Using them means scene-graph work
+                    # needs no local panoptic-segmentation inference run (and hence not the
+                    # torch-1.13 detectron2 stack) at all.
+                    released = take_path / f'panoptic_seg_{c_idx}_for_val'
+                    released_path = released / f'camera0{c_idx}_colorimage-{image_files["azure"]}.png'
+                    if released_path.exists():
+                        all_camera_parts = [released]
+                    else:
+                        all_camera_parts = (model_name / 'inference' / 'pan_pred').glob(f'{take_name}_{c_idx}_*')
                     for all_camera_part in all_camera_parts:
                         image_path = all_camera_part / f'camera0{c_idx}_colorimage-{image_files["azure"]}.png'
                         if image_path.exists():  # this is already the rgb_mask. First map it back to label representation.
