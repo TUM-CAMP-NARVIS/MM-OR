@@ -6,8 +6,8 @@ from collections import defaultdict
 from copy import deepcopy
 
 import numpy as np
-import open3d as o3d
 import torch
+from llava.utils_pcd import load_point_cloud
 from PIL import Image
 from sklearn.metrics import classification_report
 from tqdm import tqdm
@@ -123,8 +123,7 @@ class ModelWrapper:
 
             # Load pc
             if 'pc' in multimodal_data:
-                pc = o3d.io.read_point_cloud(str(multimodal_data['pc'][0]))
-                pc = torch.from_numpy(np.concatenate([np.asarray(pc.points) / 1000, np.asarray(pc.colors)], axis=-1)).float()
+                pc = torch.from_numpy(load_point_cloud(str(multimodal_data['pc'][0]))).float()
             pcs.append(pc)
 
             # load audio

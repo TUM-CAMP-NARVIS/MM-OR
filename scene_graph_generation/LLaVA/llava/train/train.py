@@ -24,11 +24,11 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional, Sequence, List, Tuple
 
 import numpy as np
-import open3d as o3d
 import torch
 import transformers
 from PIL import Image
 from llava import conversation as conversation_lib
+from llava.utils_pcd import load_point_cloud
 from llava.constants import IGNORE_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 from llava.mm_utils import tokenizer_image_token
 from llava.model import *
@@ -85,7 +85,6 @@ class TrainingArguments(transformers.TrainingArguments):
     remove_unused_columns: bool = field(default=False)
     freeze_mm_mlp_adapter: bool = field(default=False)
     unfreeze_n_vision_tower_layers: Optional[int] = field(default=None)
-    mpt_attn_impl: Optional[str] = field(default="triton")
     model_max_length: int = field(
         default=512,
         metadata={
@@ -963,8 +962,7 @@ class LazySupervisedDataset(Dataset):
         if 'pc' in self.list_data_dict[i]:
             if not self.do_multimodal_augment or random.random() > self.multimodal_drop_prop:  # maybe include
                 pc_path = self.list_data_dict[i]['pc']
-                pc = o3d.io.read_point_cloud(pc_path)
-                pc = torch.from_numpy(np.concatenate([np.asarray(pc.points) / 1000, np.asarray(pc.colors)], axis=-1)).float()
+                pc = torch.from_numpy(load_point_cloud(pc_path)).float()
                 data_dict['pc'] = pc
                 potentially_included_modalities.add('pc')
         if 'audio' in self.list_data_dict[i]:
@@ -1114,21 +1112,11 @@ def train():
         ))
 
     if model_args.vision_tower is not None:
-        if 'mpt' in model_args.model_name_or_path:
-            config = transformers.AutoConfig.from_pretrained(model_args.model_name_or_path, trust_remote_code=True)
-            config.attn_config['attn_impl'] = training_args.mpt_attn_impl
-            model = LlavaMPTForCausalLM.from_pretrained(
-                model_args.model_name_or_path,
-                config=config,
-                cache_dir=training_args.cache_dir,
-                **bnb_model_from_pretrained_args
-            )
-        else:
-            model = LlavaLlamaForCausalLM.from_pretrained(
-                model_args.model_name_or_path,
-                cache_dir=training_args.cache_dir,
-                **bnb_model_from_pretrained_args
-            )
+        model = LlavaLlamaForCausalLM.from_pretrained(
+            model_args.model_name_or_path,
+            cache_dir=training_args.cache_dir,
+            **bnb_model_from_pretrained_args
+        )
 
     else:
         model = transformers.LlamaForCausalLM.from_pretrained(
@@ -1174,21 +1162,13 @@ def train():
         rank0_print("Adding LoRA adapters...")
         model = get_peft_model(model, lora_config)
 
-    if 'mpt' in model_args.model_name_or_path:
-        tokenizer = transformers.AutoTokenizer.from_pretrained(
-            model_args.model_name_or_path,
-            cache_dir=training_args.cache_dir,
-            model_max_length=training_args.model_max_length,
-            padding_side="right"
-        )
-    else:
-        tokenizer = transformers.AutoTokenizer.from_pretrained(
-            model_args.model_name_or_path,
-            cache_dir=training_args.cache_dir,
-            model_max_length=training_args.model_max_length,
-            padding_side="right",
-            use_fast=False,
-        )
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        model_args.model_name_or_path,
+        cache_dir=training_args.cache_dir,
+        model_max_length=training_args.model_max_length,
+        padding_side="right",
+        use_fast=False,
+    )
 
         # entities =  ["head surgeon", "assistant surgeon", "circulator", "nurse", "anaesthetist", "patient", "instrument table", "operating table", "secondary table", "anesthesia equipment", "instrument"]
         # predicates = ["assisting", "cementing", "cleaning", "closeTo", "cutting", "drilling", "hammering", "holding", "lyingOn", "manipulating", "preparing", "sawing", "suturing", "touching"]
@@ -1298,7 +1278,7 @@ def train():
 
     summary(model, depth=5, col_names=['num_params', 'trainable'])
 
-    from llava.train.llama_patch import upcast_layer_for_flash_attention
+    from llava.train.dtype_utils import upcast_layer_for_flash_attention
     model = upcast_layer_for_flash_attention(model, torch.bfloat16)
     if model_args.vision_tower is not None:
         print('Reinit and upcast vision towers to bfloat16')

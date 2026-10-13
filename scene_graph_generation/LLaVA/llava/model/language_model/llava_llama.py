@@ -24,8 +24,20 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from ..llava_arch import LlavaMetaModel, LlavaMetaForCausalLM
 
 
+# MM2SG's model type. Renamed from "llava" because transformers (>=4.36) ships its own
+# native LLaVA registered under exactly that name, so `AutoConfig.register("llava", ...)`
+# now raises "'llava' is already used by a Transformers config".
+#
+# The authors' released checkpoints carry "model_type": "llava" in config.json. They still
+# load, because every load site constructs LlavaConfig explicitly instead of going through
+# AutoConfig -- see llava/model/builder.py. PretrainedConfig.from_pretrained ignores a
+# mismatched model_type when the class is named directly.
+LLAVA_MM2SG_MODEL_TYPE = "llava_mm2sg"
+LEGACY_MODEL_TYPES = ("llava",)  # what pre-existing MM-OR/ORacle checkpoints say
+
+
 class LlavaConfig(LlamaConfig):
-    model_type = "llava"
+    model_type = LLAVA_MM2SG_MODEL_TYPE
 
 
 class LlavaLlamaModel(LlavaMetaModel, LlamaModel):
@@ -127,5 +139,5 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         return _inputs
 
 
-AutoConfig.register("llava", LlavaConfig)
+AutoConfig.register(LLAVA_MM2SG_MODEL_TYPE, LlavaConfig)
 AutoModelForCausalLM.register(LlavaConfig, LlavaLlamaForCausalLM)

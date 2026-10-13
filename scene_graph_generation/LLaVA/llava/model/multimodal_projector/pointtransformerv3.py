@@ -15,7 +15,11 @@ from pathlib import Path
 import spconv.pytorch as spconv
 import torch
 import torch.nn as nn
-import torch_scatter
+# [mssg] was `import torch_scatter`. Its entire surface here is segment_csr at two call
+# sites (reduce="max" and reduce="mean"); compat.py picks torch_scatter when installed
+# and the native ATen replacement otherwise, so the modern and Holoscan envs need no
+# compiled scatter package. Validated against torch_scatter: exact for max, ~1e-7 mean.
+from llava.model.multimodal_projector.compat import segment_csr
 from addict import Dict
 from timm.models.layers import DropPath
 from torchinfo import summary
@@ -683,10 +687,10 @@ class SerializedPooling(PointModule):
 
         # collect information
         point_dict = Dict(
-            feat=torch_scatter.segment_csr(
+            feat=segment_csr(
                 self.proj(point.feat)[indices], idx_ptr, reduce=self.reduce
             ),
-            coord=torch_scatter.segment_csr(
+            coord=segment_csr(
                 point.coord[indices], idx_ptr, reduce="mean"
             ),
             grid_coord=point.grid_coord[head_indices] >> pooling_depth,
