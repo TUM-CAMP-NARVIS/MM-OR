@@ -79,9 +79,16 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         vis_descriptor_embs=None,
         pc=None,
         audio=None,
-        segmasks=None
+        segmasks=None,
+        # transformers >=4.38 generate() passes cache_position (and later versions pass
+        # further kwargs such as logits_to_keep). The signature must accept them or
+        # generate() dies with "unexpected keyword argument". **kwargs keeps this
+        # forward-compatible instead of chasing each new argument.
+        cache_position: Optional[torch.LongTensor] = None,
+        **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
 
+        spliced_multimodal = False
         if inputs_embeds is None:
             (
                 input_ids,
@@ -102,6 +109,16 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                 audio,
                 segmasks
             )
+            # prepare_inputs_labels_for_multimodal splices modality embeddings into the
+            # sequence, so the sequence length it returns differs from the one generate()
+            # derived cache_position from. Drop it in that case and let the base model
+            # recompute; keep it otherwise (the decode-step early-return path leaves the
+            # length untouched).
+            spliced_multimodal = inputs_embeds is not None
+
+        extra = dict(kwargs)
+        if cache_position is not None and not spliced_multimodal:
+            extra["cache_position"] = cache_position
         output = super().forward(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -112,7 +129,8 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
-            return_dict=return_dict
+            return_dict=return_dict,
+            **extra
         )
         output['modified_labels'] = labels
         return output
