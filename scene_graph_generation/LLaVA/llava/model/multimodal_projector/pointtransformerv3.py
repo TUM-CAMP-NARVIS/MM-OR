@@ -976,11 +976,14 @@ class PointTransformerV3(PointModule):
         The init in LLava is a bit weird and causes issues. Instead we will save a dict from a previously
         separate run and use those to initialize. These weights are also random but init correctly.
         """
-        save_path = Path('llava/model/multimodal_projector/pointtransformerv3_weights.pth')
+        # Anchored to this module, not the process CWD: the previous relative path only
+        # resolved when run from LLaVA/, so the cached weights were silently "not found"
+        # (and re-initialised) from any other working directory.
+        save_path = Path(__file__).resolve().parent / 'pointtransformerv3_weights.pth'
         if save_path.exists():
             # load the weights
             print(f'Loading PointTransformerV3 weights from {save_path}')
-            state = torch.load(save_path, map_location='cpu')
+            state = torch.load(save_path, map_location='cpu', weights_only=True)
             self.load_state_dict(state, strict=True)
         else:
             # only allow creating/saving weights when this file is executed directly

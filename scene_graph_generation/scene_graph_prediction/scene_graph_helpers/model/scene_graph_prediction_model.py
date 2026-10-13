@@ -128,7 +128,7 @@ class ModelWrapper:
 
             # load audio
             if 'audio' in multimodal_data:
-                audio = torch.load(multimodal_data['audio'][0], map_location='cpu')
+                audio = torch.load(multimodal_data['audio'][0], map_location='cpu', weights_only=True)
             audios.append(audio)
 
             if 'segmasks' in multimodal_data:

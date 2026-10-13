@@ -956,7 +956,7 @@ class LazySupervisedDataset(Dataset):
             vis_descriptor_embs = []
             for vis_knowledge_path in self.list_data_dict[i]['vis_knowledge_paths']:
                 vis_knowledge_path = os.path.join(os.path.dirname(os.getcwd()), vis_knowledge_path)
-                emb = torch.load(vis_knowledge_path, map_location='cpu')
+                emb = torch.load(vis_knowledge_path, map_location='cpu', weights_only=True)
                 vis_descriptor_embs.append(emb)
             data_dict['vis_descriptor_embs'] = vis_descriptor_embs
         if 'pc' in self.list_data_dict[i]:
@@ -968,7 +968,7 @@ class LazySupervisedDataset(Dataset):
         if 'audio' in self.list_data_dict[i]:
             if not self.do_multimodal_augment or random.random() > self.multimodal_drop_prop:  # maybe include
                 audio_embeeding_path = self.list_data_dict[i]['audio']
-                data_dict['audio'] = torch.load(audio_embeeding_path, map_location='cpu')
+                data_dict['audio'] = torch.load(audio_embeeding_path, map_location='cpu', weights_only=True)
                 potentially_included_modalities.add('audio')
         if 'segmasks' in self.list_data_dict[i]:
             # they are one channel images, read them accordingly
@@ -1052,7 +1052,7 @@ def load_model_weights(ref_model_path, peft_model, device):
     # Store the current requires_grad status
     original_requires_grad = {name: param.requires_grad for name, param in peft_model.named_parameters()}
 
-    non_lora_trainables = torch.load(os.path.join(ref_model_path, 'non_lora_trainables.bin'), map_location='cpu')
+    non_lora_trainables = torch.load(os.path.join(ref_model_path, 'non_lora_trainables.bin'), map_location='cpu', weights_only=True)
     non_lora_trainables = {(k[11:] if k.startswith('base_model.') else k): v for k, v in non_lora_trainables.items()}
     if any(k.startswith('model.model.') for k in non_lora_trainables):
         non_lora_trainables = {(k[6:] if k.startswith('model.') else k): v for k, v in non_lora_trainables.items()}
