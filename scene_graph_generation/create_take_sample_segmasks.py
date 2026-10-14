@@ -1,4 +1,6 @@
 import json
+import os
+import sys
 from functools import partial
 from pathlib import Path
 
@@ -89,7 +91,8 @@ def get_rgb_mask(mask):
     return mask_rgb
 
 
-def _segmask_helper(take_name, model_name, USE_GT=False, OUTPUT_RES=32):
+def _segmask_helper(item, model_name, USE_GT=False, OUTPUT_RES=32):
+    take_name, shard, n_shards = item
     dataset_type = '4DOR' if '4DOR' in take_name else 'MMOR'
     if dataset_type == '4DOR':
         output_folder = OR_4D_DATA_ROOT_PATH / 'take_segmasks_per_timepoint' / take_name
@@ -123,9 +126,12 @@ def _segmask_helper(take_name, model_name, USE_GT=False, OUTPUT_RES=32):
             take_json = json.load(f)
             timestamps = sorted(take_json)
 
-    # Iterate through timestamps and generate multiview frames
-    for timestamp, image_files in tqdm(timestamps):
+    # Sharded by timestamp so one slow take doesn't serialize the whole run; outputs
+    # that already exist are skipped so an interrupted run can simply be restarted.
+    for timestamp, image_files in tqdm(timestamps[shard::n_shards], disable=n_shards > 1):
         timestamp_str = str(timestamp).zfill(6)
+        if (output_folder / f'{timestamp_str}_0_GT{USE_GT}.png').exists():
+            continue
         segmasks = []
 
         if dataset_type == "MMOR":
@@ -240,9 +246,13 @@ def main():
     USE_GT = False
     OUTPUT_RES = 32
     # 4dor
-    process_map(partial(_segmask_helper, model_name=seg_path, USE_GT=USE_GT, OUTPUT_RES=OUTPUT_RES), OR4D_TAKE_NAMES, max_workers=24, chunksize=1)
-    # mmor
-    process_map(partial(_segmask_helper, model_name=seg_path, USE_GT=USE_GT, OUTPUT_RES=OUTPUT_RES), MMOR_TAKE_NAMES, max_workers=24, chunksize=1)
+    # Optional argv: take names to restrict to (default: all 4D-OR + MM-OR takes).
+    # SEGMASK_WORKERS / SEGMASK_SHARDS_PER_TAKE control parallelism.
+    workers = int(os.environ.get('SEGMASK_WORKERS', 24))
+    n_shards = int(os.environ.get('SEGMASK_SHARDS_PER_TAKE', 1))
+    takes = sys.argv[1:] or (list(OR4D_TAKE_NAMES) + list(MMOR_TAKE_NAMES))
+    items = [(t, s, n_shards) for t in takes for s in range(n_shards)]
+    process_map(partial(_segmask_helper, model_name=seg_path, USE_GT=USE_GT, OUTPUT_RES=OUTPUT_RES), items, max_workers=workers, chunksize=1)
 
 
 if __name__ == '__main__':
