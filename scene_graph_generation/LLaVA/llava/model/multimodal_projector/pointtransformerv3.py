@@ -359,9 +359,34 @@ class SerializedAttention(PointModule):
             assert (
                 upcast_softmax is False
             ), "Set upcast_softmax to False when enable Flash Attention"
-            assert flash_attn is not None, "Make sure flash_attn is installed."
-            self.patch_size = patch_size
-            self.attn_drop = attn_drop
+            if flash_attn is None:
+                # The Holoscan deployment requirements contain no flash-attn, and no
+                # prebuilt wheel exists for torch 2.9 (upstream stops at torch2.8), so
+                # running without it is the deployment reality rather than an edge case.
+                # Fall back instead of dying -- but LOUDLY, because this is NOT a free
+                # swap: the non-flash path recomputes patch_size per layer
+                # (min(bincount, patch_size_max)) and therefore uses a different attention
+                # grouping. The model was trained with flash enabled, so this is a
+                # train/inference mismatch whose cost has to be measured, not assumed.
+                # Set MMOR_REQUIRE_FLASH_ATTN=1 to hard-fail here instead.
+                import os as _os
+                import warnings as _warnings
+                if _os.environ.get("MMOR_REQUIRE_FLASH_ATTN") == "1":
+                    raise AssertionError(
+                        "flash_attn is not installed and MMOR_REQUIRE_FLASH_ATTN=1")
+                _warnings.warn(
+                    "flash_attn not installed: PointTransformerV3 is falling back to "
+                    "enable_flash=False. This changes the attention grouping and so the "
+                    "numerics; it is not equivalent to the trained configuration.",
+                    RuntimeWarning, stacklevel=2)
+                enable_flash = False
+                self.enable_flash = False
+                self.patch_size_max = patch_size
+                self.patch_size = 0
+                self.attn_drop = torch.nn.Dropout(attn_drop)
+            else:
+                self.patch_size = patch_size
+                self.attn_drop = attn_drop
         else:
             # when disable flash attention, we still don't want to use mask
             # consequently, patch size will auto set to the

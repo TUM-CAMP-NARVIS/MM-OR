@@ -60,6 +60,12 @@ def main():
     # comparable to the paper -- it exists for MM-OR-only runs.
     parser.add_argument('--no-4dor', dest='load_4dor', action='store_false', default=True,
                         help='skip the 4D-OR half of the HybridOR labels (not paper-comparable)')
+    # validate() has always accepted limit_val_batches; only eval_all passed it. Exposing
+    # it makes a bounded, reproducible run possible -- the eval loader uses shuffle=False,
+    # so the same limit processes the same samples in any environment, which is what an
+    # environment-to-environment metric comparison needs.
+    parser.add_argument('--limit-val-batches', dest='limit_val_batches', type=int, default=None,
+                        help='evaluate only the first N batches (default: the whole split)')
     args = parser.parse_args()
     pl.seed_everything(42, workers=True)
     config = config_loader(args.config)
@@ -78,7 +84,7 @@ def main():
         eval_dataset = ORDataset(config, 'test', load_4dor=args.load_4dor)
         eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False, num_workers=config['NUM_WORKERS'], pin_memory=True, collate_fn=lambda x: x)
         model = ModelWrapper(config, relationNames=eval_dataset.relations, classNames=eval_dataset.classes, model_path=args.model_path)
-        model.validate(eval_loader)
+        model.validate(eval_loader, limit_val_batches=args.limit_val_batches)
     elif mode == 'eval_all':
         print('Evaluating all checkpoints')
 

@@ -24,6 +24,16 @@ from llava.model.language_model.llava_llama import LlavaConfig
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig
 
 
+def _drop_training_quantization(cfg, load_8bit, load_4bit):
+    # QLoRA checkpoints save the bnb settings they were *trained* with in config.json.
+    # transformers 4.31 ignored that when loading the base model, so the original
+    # pipeline evaluated in bf16; 4.57 honors it and builds 4-bit layers that the
+    # bf16 base checkpoint never fills (left on meta). Only quantize when asked to.
+    if not (load_8bit or load_4bit) and getattr(cfg, "quantization_config", None) is not None:
+        del cfg.quantization_config
+    return cfg
+
+
 def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda"):
     kwargs = {"device_map": device_map}
 
@@ -51,7 +61,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         if 'lora' in model_name.lower() and model_base is not None:
             # LlavaConfig, not AutoConfig: released checkpoints say model_type "llava",
             # which transformers now resolves to its own native LlavaConfig.
-            lora_cfg_pretrained = LlavaConfig.from_pretrained(model_path)
+            lora_cfg_pretrained = _drop_training_quantization(LlavaConfig.from_pretrained(model_path), load_8bit, load_4bit)
             tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
 
             # entities = ["head surgeon", "assistant surgeon", "circulator", "nurse", "anaesthetist", "patient", "instrument table", "operating table",
@@ -96,7 +106,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             # this may be mm projector only
             print('Loading LLaVA from base model...')
             tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
-            cfg_pretrained = LlavaConfig.from_pretrained(model_path)
+            cfg_pretrained = _drop_training_quantization(LlavaConfig.from_pretrained(model_path), load_8bit, load_4bit)
             model = LlavaLlamaForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
 
             mm_projector_weights = torch.load(os.path.join(model_path, 'mm_projector.bin'), map_location='cpu', weights_only=True)
