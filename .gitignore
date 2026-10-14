@@ -34,3 +34,9 @@ pointtransformerv3_weights.pth
 # Dataset roots are symlinked in by scripts/link_dataset.sh / download_4dor.sh
 /MM-OR_data
 /4D-OR_data
+
+# Downloaded / trained checkpoints (scripts/download_pretrained.sh, train_sgg.sh) --
+# multi-GB weights that belong on the HF Hub, not in git. Keep the placeholder.
+/scene_graph_generation/LLaVA/_hf/
+/scene_graph_generation/LLaVA/checkpoints/*
+!/scene_graph_generation/LLaVA/checkpoints/.gitkeep
