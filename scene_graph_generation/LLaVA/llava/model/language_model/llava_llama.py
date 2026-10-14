@@ -110,11 +110,14 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
                 segmasks
             )
             # prepare_inputs_labels_for_multimodal splices modality embeddings into the
-            # sequence, so the sequence length it returns differs from the one generate()
-            # derived cache_position from. Drop it in that case and let the base model
-            # recompute; keep it otherwise (the decode-step early-return path leaves the
-            # length untouched).
-            spliced_multimodal = inputs_embeds is not None
+            # sequence, so the real sequence -- and hence the KV cache -- is longer than the
+            # text-only input_ids generate() derives cache_position from. That holds for the
+            # prefill AND for every later decode step (the cache keeps the spliced length).
+            # A stale cache_position builds a causal mask that hides most of the context
+            # from each new token; it only bites when an explicit mask is materialized,
+            # i.e. when the batch contains padding (then every row in the batch is garbage).
+            # Drop it and let the base model recompute it from past_key_values.
+            spliced_multimodal = images is not None
 
         extra = dict(kwargs)
         if cache_position is not None and not spliced_multimodal:
