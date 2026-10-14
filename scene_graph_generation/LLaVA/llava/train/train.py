@@ -1090,6 +1090,9 @@ def train():
         (ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     local_rank = training_args.local_rank
+    # Trainer only seeds in its own __init__, after the model is built, so the randomly
+    # initialized parts (image pooler, LoRA A) differed on every run. Seed before building.
+    transformers.set_seed(training_args.seed)
     compute_dtype = (torch.float16 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
 
     bnb_model_from_pretrained_args = {}
@@ -1097,8 +1100,8 @@ def train():
         from transformers import BitsAndBytesConfig
         bnb_model_from_pretrained_args.update(dict(
             device_map={"": training_args.device},
-            load_in_4bit=training_args.bits == 4,
-            load_in_8bit=training_args.bits == 8,
+            # load_in_4bit/8bit live only in quantization_config: transformers >=4.4x rejects
+            # them as separate kwargs alongside it, and 4.31 reads them from the config anyway.
             quantization_config=BitsAndBytesConfig(
                 load_in_4bit=training_args.bits == 4,
                 load_in_8bit=training_args.bits == 8,
