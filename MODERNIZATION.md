@@ -18,8 +18,9 @@ The source tree is **bi-compatible**: it still imports and runs on the original 
 is what allows the original environment to serve as a parity oracle for every change below.
 
 **Result: the modernized stack reproduces the original pipeline's metrics on the full test
-set (combined Macro-F1 0.691 vs 0.689, every take within ±0.007; see
-[Verification](#verification)).**
+set (combined Macro-F1 0.691 vs 0.689, every take within ±0.007), and its training loss
+tracks the original within run-to-run noise over 200 steps (see
+[Verification](#3-verification)).**
 
 ---
 
@@ -62,6 +63,27 @@ The full rationale for each change is in its commit message. Summary:
   all of them load tensors only.
 - **`pyproject.toml`** no longer pins the 2023 stack. `pip install -e .` used to try to
   downgrade torch 2.9 → 2.0. The web-demo extras moved to an optional `demo` extra.
+
+### Training path (transformers 4.57 / peft 0.21 / DeepSpeed 0.19)
+
+- **Unfrozen CLIP layers received no gradient (silent).** transformers >= 4.35 enables
+  gradient checkpointing in *every* submodule that supports it, including the nested CLIP
+  vision encoder; 4.31 only checkpointed Llama. Under the default *reentrant* checkpointing,
+  a block whose input does not require grad yields no parameter gradients, and CLIP's input
+  comes from its frozen embeddings. So `--unfreeze_n_vision_tower_layers 12` trained
+  nothing. `train.py` now selects non-reentrant checkpointing (numerically equivalent).
+- **Gradient-accumulation normalization (silent).** transformers >= 4.46 skips the
+  `/ gradient_accumulation_steps` division when the model's forward takes `**kwargs`
+  (ours does), assuming the model normalizes itself. `compute_loss` returns a per-batch
+  mean as in 4.31, so `LLaVATrainer` restores the original normalization; otherwise every
+  gradient would be scaled by 4.
+- **fp32 loss.** 4.31's Llama always returned fp32 logits; 4.57 keeps bf16. Logits are
+  upcast before the token-weighted cross-entropy, as before.
+- **Seeding.** The Trainer seeds only in its `__init__`, after the image pooler and LoRA
+  weights were randomly initialized, so no two original runs started from the same weights.
+  `train.py` seeds first, and `--data_seed` pins the length-grouped sampler's order.
+- **API drift:** `load_in_4bit` only via `quantization_config`; new signatures of
+  `_get_train_sampler`, `compute_loss`, `_save_checkpoint`.
 
 ### Dead code removed (~2780 lines)
 
@@ -241,11 +263,49 @@ For reference, before the padding fix in §1 the same run scored MM-OR 0.106, wh
 was unchanged at 0.895. It also ran about 20 % slower, because the broken generations ran
 to `max_new_tokens` instead of stopping at `</SG>`.
 
+### Training: 200-step QLoRA runs
+
+Setup: the README recipe (QLoRA r=128, bs 4 × GA 4, DeepSpeed ZeRO-2, bf16, gradient
+checkpointing, image-order and modality-drop augmentation), one A40 per run, 200 optimizer
+steps, identical batch order (`--data_seed 42`) in both stacks, two init seeds (42, 7).
+The modern runs use `--max_grad_norm 0` (see the clipping note below).
+
+Training loss, modern relative to original, mean per window:
+
+| steps | seed 42 | seed 7 | original: seed 7 vs seed 42 |
+|---|---|---|---|
+| 11–50 | −0.4% | −0.5% | +0.4% |
+| 51–100 | −0.3% | −0.5% | +0.4% |
+| 101–150 | −0.5% | −0.3% | +0.6% |
+| 151–200 | −0.4% | −0.4% | +1.3% |
+
+The median per-step difference between stacks is 0.4–0.5%, against 1.0% between two seeds
+of the original stack. **Verdict: parity.** The very first steps agree to 0.2–0.4%, and
+Adam's state after step 1 shows matching gradients per parameter group (cosine 0.89–0.998).
+The exception is LoRA B, because the two peft versions draw different random LoRA A
+matrices; that is an init difference, not a computational one.
+
+Before the CLIP-gradient fix, modern ran 2–5% *below* the original in every window, for
+both seeds. That gap is how the bug was found.
+
+Throughput on an A40: 14.8–16.4 s per step (modern) vs 17.7 s (original); peak GPU
+memory 22 GB vs 40 GB. A full stage-1 epoch (312,300 samples, 19,518 steps) takes about
+3.3 days on one A40.
+
+**Gradient clipping never ran in the original training.** DeepSpeed 0.9.5's ZeRO-1/2
+optimizer computes the gradient norm, and therefore clips, only for fp16
+(`if self.dtype == torch.float16`). Under bf16, `--max_grad_norm 0.1` was a no-op, and
+gradient norms of 2–4 went to Adam unclipped. DeepSpeed 0.19 does clip. The recipe flag
+is unchanged (`train_sgg.sh` defaults to 0.1). To reproduce the original training
+behaviour, pass `MAX_GRAD_NORM=0`. Clipping had no measurable effect on the 200-step
+curves, which is expected: Adam is nearly invariant to a uniform gradient scale.
+
 ### Not yet verified
 
 - **Comparison against the paper's published table.** This verification establishes
   *original pipeline == modernized pipeline*. It does not establish *either == paper*.
   The 4D-OR takes run without segmasks (see §2), so they deviate from the paper's setup.
-- **Training.** Only the evaluation path has been exercised end-to-end. Training was
-  checked at the level of imports and the smoke test only.
+- **Full training.** Only 200 steps (about 1% of a stage-1 epoch) were run per stack. A
+  full stage-1 and stage-2 (temporal curriculum) training, followed by the test-set eval,
+  is what would show whether the modern stack reproduces the released checkpoints.
 - **Downstream tasks.** Blocked by the missing `extract_metalabels_for_MMOR.py`.

@@ -1133,10 +1133,22 @@ def train():
     if model_args.freeze_backbone:
         model.model.requires_grad_(False)
 
+    # transformers >=4.35 applies gradient checkpointing to *every* submodule that supports it,
+    # including the nested CLIP vision encoder (4.31 only checkpointed the Llama model). With the
+    # default reentrant checkpointing, a checkpointed block whose input does not require grad
+    # yields no parameter gradients -- and CLIP's input comes from its frozen embeddings, so the
+    # unfrozen CLIP layers (--unfreeze_n_vision_tower_layers) silently received zero gradient.
+    # Non-reentrant checkpointing is numerically equivalent and propagates them. (4.31 has no
+    # gradient_checkpointing_kwargs and never checkpointed CLIP, so it needs nothing.)
+    gc_kwargs = {}
+    if training_args.gradient_checkpointing and hasattr(training_args, 'gradient_checkpointing_kwargs'):
+        training_args.gradient_checkpointing_kwargs = {'use_reentrant': False}
+        gc_kwargs = {'gradient_checkpointing_kwargs': training_args.gradient_checkpointing_kwargs}
+
     if training_args.bits in [4, 8]:
         from peft import prepare_model_for_kbit_training
         model.config.torch_dtype = (torch.float32 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
-        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=training_args.gradient_checkpointing)
+        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=training_args.gradient_checkpointing, **gc_kwargs)
 
     if training_args.gradient_checkpointing:
         if hasattr(model, "enable_input_require_grads"):
