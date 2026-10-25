@@ -24,6 +24,51 @@ tracks the original within run-to-run noise over 200 steps (see
 
 ---
 
+## Installation
+
+```bash
+cd scene_graph_generation
+./setup_env_modern.sh            # --help for options; --locked for the exact verified set
+source .venv-mmor/bin/activate
+```
+
+Everything comes from prebuilt wheels, so no CUDA toolkit or compiler is needed. The
+requirements are Linux x86_64, Python 3.12 and a driver for CUDA ≥ 12.8. The README's
+[evaluation walkthrough](README.md#evaluating-the-published-checkpoints-step-by-step-modernized-stack)
+covers data, checkpoints and the eval command.
+
+| file | contents |
+|---|---|
+| `requirements-modern/torch.txt` | torch 2.9.1 / torchvision 0.24.1, installed from the cu128 index |
+| `requirements-modern/requirements.txt` | pinned top-level packages (transformers 4.57.6, peft 0.21.2, bitsandbytes 0.50.2, spconv-cu126 2.3.8, …) |
+| `requirements-modern/lock.txt` | `pip freeze` of the environment the metrics below were produced with |
+| `setup_env_modern.sh` | installs the above, plus the flash-attn 2.8.3 release wheel, LLaVA (editable, `--no-deps`) and the PTv3 init weights |
+
+`requirements.txt` and `LLaVA/pyproject.toml` are not used for this stack. The first still
+pins the original 2023 versions for the baseline environment. The second deliberately
+declares no versions.
+
+**The install recipe is verified.** I built a fresh venv with `setup_env_modern.sh` in a
+clean checkout of this branch and ran the README eval command on the released stage-1
+checkpoint (`--limit-val-batches 20`). Every metric line was identical to the environment
+behind the results in §3. That run also used a newly created
+`pointtransformerv3_weights.pth`, which shows the file's random content does not matter
+for evaluation: the checkpoint overwrites all PTv3 weights.
+
+### Troubleshooting
+
+| symptom | cause / fix |
+|---|---|
+| `AssertionError: No weights found at .../pointtransformerv3_weights.pth` | The PTv3 init file is required even for evaluation. Run `cd LLaVA && python -m llava.model.multimodal_projector.pointtransformerv3` once, on a GPU. |
+| `RuntimeWarning: flash_attn not installed: PointTransformerV3 is falling back …` | flash-attn is missing, so results deviate from the verified numbers. Install the release wheel (see `setup_env_modern.sh`). Never `pip install flash-attn`: that compiles from source. |
+| pip tries to downgrade torch, or installs transformers 4.31 / numpy 1.26 | You used `requirements.txt` or a plain `pip install -e LLaVA`. Use `requirements-modern/` and `pip install --no-deps -e LLaVA`. |
+| `ModuleNotFoundError: torch_scatter` / `open3d` | Code from `master`, not this branch. Check out `modernize/torch29-cu128`. |
+| `FileNotFoundError: .../mm_projector.bin` (or another loading error) | The checkpoint directory was renamed. The loader needs `llava` and `lora` in the directory name to load it as a LoRA adapter on top of `liuhaotian/llava-v1.5-7b`. |
+| Metrics far below §3, quietly | Missing modality folders are skipped without an error (§2). Check that the per-timepoint audio, transcript and segmask folders exist for the test takes. |
+| `CUDA driver version is insufficient` / `no kernel image is available` | The driver is too old for cu128 (`nvidia-smi` must report CUDA ≥ 12.8), or the GPU is older than the cu128 wheels support. Verified on A40 and RTX A6000 (sm_86). |
+
+---
+
 ## 1. Code changes
 
 The full rationale for each change is in its commit message. Summary:

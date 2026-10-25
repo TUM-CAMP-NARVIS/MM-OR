@@ -46,3 +46,5 @@ pointtransformerv3_weights.pth
 !/scene_graph_generation/data/llava_samples/train_token_freqs_7b_50perm.json
 /scene_graph_generation/data/sample_to_similar_samples_*.json
 segmentation_map_feature_extractor_withembeddings*.pt
+/scene_graph_generation/.venv-mmor/
+/scene_graph_generation/LLaVA/_hf/

@@ -104,7 +104,32 @@ This part of the repository contains the code for training and evaluating scene 
 This section builds upon the ORacle (https://github.com/egeozsoy/ORacle) and LLava (https://github.com/haotian-liu/LLaVA) repositories.
 
 
-### Installation
+### Installation (modernized stack: Python 3.12, torch 2.9.1, CUDA 12.8)
+This branch (`modernize/torch29-cu128`) runs on a current stack and reproduces the original metrics; see
+[MODERNIZATION.md](MODERNIZATION.md) for what changed and how it was verified. Requirements: Linux x86_64,
+an NVIDIA GPU with at least 24 GB of memory, a driver that supports CUDA 12.8 or newer, and Python 3.12.
+No CUDA toolkit or compiler is needed: everything installs from prebuilt wheels.
+```bash
+cd scene_graph_generation
+./setup_env_modern.sh          # creates ./.venv-mmor (see --help: --env, --python, --locked, --no-flash-attn)
+source .venv-mmor/bin/activate
+```
+The script installs torch from the cu128 index, the pinned packages in `requirements-modern/requirements.txt`,
+the flash-attn 2.8.3 release wheel and LLaVA (editable), and creates the PointTransformerV3 init weights
+(this step needs a GPU). `--locked` installs the exact package set the metrics were verified with
+(`requirements-modern/lock.txt`). Doing the same by hand:
+```bash
+python3.12 -m venv .venv-mmor && source .venv-mmor/bin/activate
+pip install --index-url https://download.pytorch.org/whl/cu128 -r requirements-modern/torch.txt
+pip install -r requirements-modern/requirements.txt
+pip install --no-deps https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
+pip install --no-deps -e LLaVA
+(cd LLaVA && python -m llava.model.multimodal_projector.pointtransformerv3)
+```
+Do not use `requirements.txt` or `pip install flash-attn` for this stack: the former pins the original 2023
+versions, the latter compiles flash-attn from source. torch-scatter and open3d are no longer needed.
+
+### Installation (original 2023 stack: torch 2.0.1, CUDA 11.8)
 - cd into scene_graph_generation dir
 - Run `pip install -r requirements.txt`.
 - Locally install llava by going into LLaVa folder and running `pip install -e .`
@@ -273,3 +298,30 @@ This section builds upon the ORacle (https://github.com/egeozsoy/ORacle) and LLa
 - You can either train the models yourself our use our pretrained models.
 - To evaluate a non temporal model run: `python -u -m scene_graph_prediction.main --config mmor.json --model_path LLaVA/checkpoints/llava-v1.5-7b-task-lora_hybridor_qlora_20perm_AZURE_SIMSTATION_TRACKERCAM_PC_AUDIO_SPEECH_ROBOTMETA_TRACKINGMETA_PREDSEGMASKS_0.50drop_MIXED`. Make sure the model paths match.
 - To evaluate a temporal model run: `python -u -m scene_graph_prediction.main --config mmor_temporal_pred.json --model_path LLaVA/checkpoints/llava-v1.5-7b-task-lora_hybridor_qlora_20perm_AZURE_SIMSTATION_TRACKERCAM_PC_AUDIO_SPEECH_ROBOTMETA_TRACKINGMETA_PREDSEGMASKS_0.50drop_MIXED_temporal_curriculum`. Make sure the model paths match.
+
+#### Evaluating the published checkpoints, step by step (modernized stack)
+1. Install the environment as described in [Installation (modernized stack)](#installation-modernized-stack-python-312-torch-291-cuda-128).
+   Evaluation needs `LLaVA/llava/model/multimodal_projector/pointtransformerv3_weights.pth`, which
+   `setup_env_modern.sh` creates. Without it, building the model fails with `AssertionError: No weights found at ...`
+   even though the checkpoint replaces these weights afterwards.
+2. Link the data at the repository root: `MM-OR_data` must point at the directory that directly contains the take
+   folders (`001_PKA`, ..., `take_jsons`), and `4D-OR_data` at the 4D-OR dataset; the test set includes two 4D-OR takes.
+   Add `--no-4dor` for an MM-OR-only run. The per-timepoint modality folders (audio, transcripts, segmasks) are not part
+   of the download and have to be generated first; see [MODERNIZATION.md, section 2](MODERNIZATION.md#2-dataset-deviations-from-the-release-and-what-has-to-be-generated).
+3. Download the checkpoints and unzip them so that each one is a directory directly under `LLaVA/checkpoints/`:
+   ```bash
+   huggingface-cli download egeozsoy/MM-OR --include 'checkpoints/*' --local-dir LLaVA/_hf
+   for z in LLaVA/_hf/checkpoints/*.zip; do unzip -n "$z" -d LLaVA/checkpoints/; done
+   ```
+   Keep the directory names: the loader decides from the name (it must contain `llava` and `lora`) that the checkpoint
+   is a LoRA adapter on top of `liuhaotian/llava-v1.5-7b`.
+4. Run from `scene_graph_generation/`, with the venv active:
+   ```bash
+   CUDA_VISIBLE_DEVICES=0 python -u -m scene_graph_prediction.main --config mmor.json \
+       --model_path LLaVA/checkpoints/llava-v1.5-7b-task-lora_hybridor_qlora_20perm_AZURE_SIMSTATION_TRACKERCAM_PC_AUDIO_SPEECH_ROBOTMETA_TRACKINGMETA_PREDSEGMASKS_0.50drop_MIXED
+   ```
+   The first run downloads `liuhaotian/llava-v1.5-7b` and `openai/clip-vit-large-patch14-336` from Hugging Face (about 15 GB).
+   `--limit-val-batches 20` gives a quick check (a few minutes) before the full test set (543 batches, about 80 minutes on an A40/A6000).
+5. Expected result for this checkpoint on the full test set: combined Macro-F1 0.691 (4D-OR 0.899, MM-OR 0.500).
+   Per-take numbers and the comparison with the original stack are in [MODERNIZATION.md](MODERNIZATION.md#3-verification).
+   The temporal checkpoint (`--config mmor_temporal_pred.json`) runs one sample at a time and takes several hours.
