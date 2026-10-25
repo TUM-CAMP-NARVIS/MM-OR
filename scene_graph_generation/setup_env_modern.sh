@@ -9,7 +9,7 @@
 #   --env DIR           venv location (default: .venv-mmor next to this script)
 #   --python EXE        Python 3.12 interpreter used to create the venv (default: python3.12)
 #   --locked            install the exact verified package set (requirements-modern/lock.txt)
-#                       instead of the top-level pins
+#                       instead of the top-level pins in requirements.txt
 #   --no-flash-attn     skip flash-attn. PointTransformerV3 then falls back to a different
 #                       attention grouping, which changes the numerics: published metrics were
 #                       verified WITH flash-attn.
@@ -52,7 +52,7 @@ else
     echo ">>> [1/4] torch 2.9.1 + cu128"
     "$PY" -m pip install --index-url "$TORCH_INDEX" -r "$REQ/torch.txt"
     echo ">>> [1/4] remaining packages"
-    "$PY" -m pip install -r "$REQ/requirements.txt"
+    "$PY" -m pip install -r "$HERE/requirements.txt"
 fi
 
 if [ $FLASH -eq 1 ]; then
@@ -62,7 +62,7 @@ else
     echo ">>> [2/4] skipping flash-attn"
 fi
 
-echo ">>> [3/4] LLaVA (editable, --no-deps: versions are owned by requirements-modern/)"
+echo ">>> [3/4] LLaVA (editable, --no-deps: versions are owned by requirements.txt)"
 "$PY" -m pip install --no-deps -e "$HERE/LLaVA"
 
 PTV3_W="$HERE/LLaVA/llava/model/multimodal_projector/pointtransformerv3_weights.pth"

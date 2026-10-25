@@ -40,20 +40,31 @@ covers data, checkpoints and the eval command.
 | file | contents |
 |---|---|
 | `requirements-modern/torch.txt` | torch 2.9.1 / torchvision 0.24.1, installed from the cu128 index |
-| `requirements-modern/requirements.txt` | pinned top-level packages (transformers 4.57.6, peft 0.21.2, bitsandbytes 0.50.2, spconv-cu126 2.3.8, …) |
+| `requirements.txt` | pinned top-level packages (transformers 4.57.6, peft 0.21.2, bitsandbytes 0.50.2, spconv-cu126 2.3.8, …) |
 | `requirements-modern/lock.txt` | `pip freeze` of the environment the metrics below were produced with |
 | `setup_env_modern.sh` | installs the above, plus the flash-attn 2.8.3 release wheel, LLaVA (editable, `--no-deps`) and the PTv3 init weights |
 
-`requirements.txt` and `LLaVA/pyproject.toml` are not used for this stack. The first still
-pins the original 2023 versions for the baseline environment. The second deliberately
-declares no versions.
+The original 2023 pins (torch 2.0.1, transformers 4.31) moved to `requirements-original.txt`;
+use it only to rebuild the original stack. `LLaVA/pyproject.toml` deliberately declares no
+versions.
 
-**The install recipe is verified.** I built a fresh venv with `setup_env_modern.sh` in a
-clean checkout of this branch and ran the README eval command on the released stage-1
-checkpoint (`--limit-val-batches 20`). Every metric line was identical to the environment
-behind the results in §3. That run also used a newly created
-`pointtransformerv3_weights.pth`, which shows the file's random content does not matter
-for evaluation: the checkpoint overwrites all PTv3 weights.
+**The install recipe is verified.**
+- **Fresh install.** `setup_env_modern.sh` builds a fresh venv in a clean checkout of this
+  branch with nothing but prebuilt wheels. Its package set matches `lock.txt` apart from a
+  few transitive patch releases (certifi, tifffile, …).
+- **Same scores.** The README eval command on the released stage-1 checkpoint scores the
+  same as the reference environment, within run-to-run noise.
+  - On the full test set, combined Macro-F1 was 0.687 on an RTX A6000, against 0.691 for
+    §3 on an A40.
+  - Over 20 batches, both environments land in the same 0.880–0.885 spread.
+- **The PTv3 init file does not matter for evaluation.** Its content is random, but the
+  checkpoint contains all 288 PointTransformerV3 parameters and buffers and overwrites
+  them.
+
+**Evaluation is not bit-reproducible run to run.** Repeating the same command in the same
+venv on the same GPU gave Macro-F1 0.882, 0.882 and 0.885 over 20 batches, and even the two
+0.882 runs differ in precision. Expect a few thousandths of variation on the full test set
+as well. Compare runs by take-level numbers within about ±0.01, not by exact equality.
 
 ### Troubleshooting
 
@@ -61,7 +72,7 @@ for evaluation: the checkpoint overwrites all PTv3 weights.
 |---|---|
 | `AssertionError: No weights found at .../pointtransformerv3_weights.pth` | The PTv3 init file is required even for evaluation. Run `cd LLaVA && python -m llava.model.multimodal_projector.pointtransformerv3` once, on a GPU. |
 | `RuntimeWarning: flash_attn not installed: PointTransformerV3 is falling back …` | flash-attn is missing, so results deviate from the verified numbers. Install the release wheel (see `setup_env_modern.sh`). Never `pip install flash-attn`: that compiles from source. |
-| pip tries to downgrade torch, or installs transformers 4.31 / numpy 1.26 | You used `requirements.txt` or a plain `pip install -e LLaVA`. Use `requirements-modern/` and `pip install --no-deps -e LLaVA`. |
+| pip tries to downgrade torch, or installs transformers 4.31 / numpy 1.26 | You installed `requirements-original.txt` (or `requirements.txt` from `master`), or ran a plain `pip install -e LLaVA`. Use `setup_env_modern.sh`, or `requirements.txt` from this branch and `pip install --no-deps -e LLaVA`. |
 | `ModuleNotFoundError: torch_scatter` / `open3d` | Code from `master`, not this branch. Check out `modernize/torch29-cu128`. |
 | `FileNotFoundError: .../mm_projector.bin` (or another loading error) | The checkpoint directory was renamed. The loader needs `llava` and `lora` in the directory name to load it as a LoRA adapter on top of `liuhaotian/llava-v1.5-7b`. |
 | Metrics far below §3, quietly | Missing modality folders are skipped without an error (§2). Check that the per-timepoint audio, transcript and segmask folders exist for the test takes. |

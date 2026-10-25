@@ -114,24 +114,24 @@ cd scene_graph_generation
 ./setup_env_modern.sh          # creates ./.venv-mmor (see --help: --env, --python, --locked, --no-flash-attn)
 source .venv-mmor/bin/activate
 ```
-The script installs torch from the cu128 index, the pinned packages in `requirements-modern/requirements.txt`,
+The script installs torch from the cu128 index, the pinned packages in `requirements.txt`,
 the flash-attn 2.8.3 release wheel and LLaVA (editable), and creates the PointTransformerV3 init weights
 (this step needs a GPU). `--locked` installs the exact package set the metrics were verified with
 (`requirements-modern/lock.txt`). Doing the same by hand:
 ```bash
 python3.12 -m venv .venv-mmor && source .venv-mmor/bin/activate
 pip install --index-url https://download.pytorch.org/whl/cu128 -r requirements-modern/torch.txt
-pip install -r requirements-modern/requirements.txt
+pip install -r requirements.txt
 pip install --no-deps https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
 pip install --no-deps -e LLaVA
 (cd LLaVA && python -m llava.model.multimodal_projector.pointtransformerv3)
 ```
-Do not use `requirements.txt` or `pip install flash-attn` for this stack: the former pins the original 2023
-versions, the latter compiles flash-attn from source. torch-scatter and open3d are no longer needed.
+Install torch before `requirements.txt` as shown, and do not `pip install flash-attn`: that compiles it from source.
+torch-scatter and open3d are no longer needed.
 
 ### Installation (original 2023 stack: torch 2.0.1, CUDA 11.8)
 - cd into scene_graph_generation dir
-- Run `pip install -r requirements.txt`.
+- Run `pip install -r requirements-original.txt` (on `master` this file is still called `requirements.txt`).
 - Locally install llava by going into LLaVa folder and running `pip install -e .`
 - Potentially you need to explicitly install flash-attn like `pip install flash-attn --no-build-isolation`
 - Install the correct spconv version for pointtransformers by running `pip install spconv-cu117`. Make sure to install the correct version for your CUDA version.
@@ -322,6 +322,7 @@ versions, the latter compiles flash-attn from source. torch-scatter and open3d a
    ```
    The first run downloads `liuhaotian/llava-v1.5-7b` and `openai/clip-vit-large-patch14-336` from Hugging Face (about 15 GB).
    `--limit-val-batches 20` gives a quick check (a few minutes) before the full test set (543 batches, about 80 minutes on an A40/A6000).
-5. Expected result for this checkpoint on the full test set: combined Macro-F1 0.691 (4D-OR 0.899, MM-OR 0.500).
+5. Expected result for this checkpoint on the full test set: combined Macro-F1 about 0.69 (verified runs: 0.691 and 0.687;
+   4D-OR about 0.90, MM-OR about 0.50). Evaluation is not bit-reproducible, so repeated runs differ by a few thousandths.
    Per-take numbers and the comparison with the original stack are in [MODERNIZATION.md](MODERNIZATION.md#3-verification).
    The temporal checkpoint (`--config mmor_temporal_pred.json`) runs one sample at a time and takes several hours.
