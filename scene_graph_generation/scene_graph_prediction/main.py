@@ -66,6 +66,12 @@ def main():
     # environment-to-environment metric comparison needs.
     parser.add_argument('--limit-val-batches', dest='limit_val_batches', type=int, default=None,
                         help='evaluate only the first N batches (default: the whole split)')
+    # Default (bf16 base, LoRA merged in) is what the released checkpoints were evaluated
+    # with. QLoRA-trained checkpoints can behave differently once merged into bf16 (with the
+    # temporal config a self-retrained model degenerated); --load-4bit evaluates them exactly
+    # as trained. See MODERNIZATION.md, "Evaluating in 4-bit".
+    parser.add_argument('--load-4bit', dest='load_4bit', action='store_true', default=False,
+                        help='load the base model in NF4 4-bit and keep the LoRA unmerged, as in QLoRA training')
     args = parser.parse_args()
     pl.seed_everything(42, workers=True)
     config = config_loader(args.config)
@@ -83,7 +89,7 @@ def main():
         print(f'Model path: {args.model_path}')
         eval_dataset = ORDataset(config, 'test', load_4dor=args.load_4dor)
         eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False, num_workers=config['NUM_WORKERS'], pin_memory=True, collate_fn=lambda x: x)
-        model = ModelWrapper(config, relationNames=eval_dataset.relations, classNames=eval_dataset.classes, model_path=args.model_path)
+        model = ModelWrapper(config, relationNames=eval_dataset.relations, classNames=eval_dataset.classes, model_path=args.model_path, load_4bit=args.load_4bit)
         model.validate(eval_loader, limit_val_batches=args.limit_val_batches)
     elif mode == 'eval_all':
         print('Evaluating all checkpoints')
@@ -125,7 +131,7 @@ def main():
             torch.cuda.empty_cache()
             train_loader = DataLoader(eval_dataset_for_train, batch_size=batch_size, shuffle=shuffle, num_workers=config['NUM_WORKERS'], pin_memory=True, collate_fn=lambda x: x)
             eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False, num_workers=config['NUM_WORKERS'], pin_memory=True, collate_fn=lambda x: x)
-            model = ModelWrapper(config, relationNames=train_dataset.relations, classNames=train_dataset.classes, model_path=str(checkpoint))
+            model = ModelWrapper(config, relationNames=train_dataset.relations, classNames=train_dataset.classes, model_path=str(checkpoint), load_4bit=args.load_4bit)
             model.validate(train_loader, limit_val_batches=1000 // batch_size, logging_information={'split': 'train', "logger": logger, "checkpoint_id": checkpoint_id})
             model.validate(eval_loader, logging_information={'split': 'val', "logger": logger, "checkpoint_id": checkpoint_id})
             # cleanup before next run
@@ -141,7 +147,7 @@ def main():
         train_dataset = ORDataset(config, 'train', load_4dor=args.load_4dor)
         eval_dataset = ORDataset(config, infer_split, load_4dor=args.load_4dor)
         eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False, num_workers=config['NUM_WORKERS'], pin_memory=True, collate_fn=lambda x: x)
-        model = ModelWrapper(config, relationNames=train_dataset.relations, classNames=train_dataset.classes, model_path=args.model_path)
+        model = ModelWrapper(config, relationNames=train_dataset.relations, classNames=train_dataset.classes, model_path=args.model_path, load_4bit=args.load_4bit)
         results = model.infer(eval_loader)
         # results should be batch scan id -> list of relations
         output_name = f'scan_relations_{name}_{infer_split}.json'

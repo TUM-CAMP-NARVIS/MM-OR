@@ -76,6 +76,7 @@ as well. Compare runs by take-level numbers within about ±0.01, not by exact eq
 | `ModuleNotFoundError: torch_scatter` / `open3d` | Code from `master`, not this branch. Check out `modernize/torch29-cu128`. |
 | `FileNotFoundError: .../mm_projector.bin` (or another loading error) | The checkpoint directory was renamed. The loader needs `llava` and `lora` in the directory name to load it as a LoRA adapter on top of `liuhaotian/llava-v1.5-7b`. |
 | Metrics far below §3, quietly | Missing modality folders are skipped without an error (§2). Check that the per-timepoint audio, transcript and segmask folders exist for the test takes. |
+| Temporal eval of a self-trained checkpoint crashes with a negative-dimension error after a few hundred samples, with garbled triplets (`anaesthetistmulticolor`, `Constra…`) in the output | Evaluate with `--load-4bit`. Merged into bf16, the QLoRA model can degenerate, and the temporal prompt (built from its own past predictions) then outgrows 2048 tokens. See §3, "Evaluating in 4-bit". |
 | `CUDA driver version is insufficient` / `no kernel image is available` | The driver is too old for cu128 (`nvidia-smi` must report CUDA ≥ 12.8), or the GPU is older than the cu128 wheels support. Verified on A40 and RTX A6000 (sm_86). |
 
 ---
@@ -109,8 +110,13 @@ The full rationale for each change is in its commit message. Summary:
   - transformers 4.31 ignored it, so **the original pipeline evaluates in bf16**.
   - 4.57 honors it and builds 4-bit layers that the bf16 base never fills, which fails
     with `Cannot copy out of meta tensor`.
-  - It is now dropped unless `load_4bit`/`load_8bit` is requested, which preserves the
-    original bf16 behaviour.
+  - It is now always dropped. The default therefore keeps the original bf16 behaviour,
+    and `load_4bit`/`load_8bit` pass their own quantization config.
+- **4-bit evaluation (`builder.py`, `main.py --load-4bit`).** The original `load_4bit`
+  path did not work on QLoRA checkpoints. It now loads the base exactly as `train.py`
+  does (NF4, bf16 compute, projector/pooler/vision tower unquantized) and keeps the LoRA
+  adapters unmerged, since they cannot be merged into a 4-bit base. Embeddings are resized
+  only when the tokenizer actually grew. See §3, "Evaluating in 4-bit".
 - **Trainer.** `ALL_LAYERNORM_LAYERS` moved to `transformers.pytorch_utils`. The
   `ShardedDDPOption` / fairscale branches were removed upstream and were never taken here,
   since training uses DeepSpeed ZeRO-2.
@@ -356,12 +362,55 @@ is unchanged (`train_sgg.sh` defaults to 0.1). To reproduce the original trainin
 behaviour, pass `MAX_GRAD_NORM=0`. Clipping had no measurable effect on the 200-step
 curves, which is expected: Adam is nearly invariant to a uniform gradient scale.
 
+### Full training: stage 1 and temporal stage 2
+
+Setup: `train_sgg_full.sh` in the modern stack, the README recipe, one epoch per stage on one
+A40 (stage 1: 82 h, stage 2: 90 h), `--max_grad_norm 0.1` (so, unlike the original,
+clipping is active). Compared with the released checkpoints on the full test set, all
+modern stack:
+
+| model | eval load mode | combined Macro-F1 | 4D-OR | MM-OR |
+|---|---|---|---|---|
+| stage 1, released | bf16, merged | 0.687–0.691 | 0.894–0.899 | 0.498–0.500 |
+| stage 1, retrained | bf16, merged | 0.689 | 0.895 | 0.508 |
+| temporal, released | bf16, merged | 0.696 (original stack: 0.702) | | |
+| temporal, released | 4-bit, unmerged | 0.707 | 0.896 | 0.532 |
+| temporal, retrained | bf16, merged | crashes (see below) | | |
+| temporal, retrained | **4-bit, unmerged** | **0.703** | 0.911 | 0.522 |
+
+**Verdict: the modern stack reproduces the released checkpoints**, within the run-to-run
+spread of the eval (0.687–0.691 over three runs of the same checkpoint, see §3). The
+retrained temporal model has to be evaluated with `--load-4bit`, however.
+
+#### Evaluating in 4-bit
+
+The standard eval path loads the base in bf16 and merges the LoRA weights into it. The
+model was trained with the LoRA on top of an NF4-quantized base, so the merged model is
+close to, but not the same as, the trained one.
+
+- **Released checkpoints:** the difference does not matter. Both modes run cleanly, and
+  the temporal checkpoint scores 0.696 (bf16) and 0.707 (4-bit).
+- **Retrained temporal checkpoint:** in bf16 it occasionally emits garbled entity names
+  (`anaesthetistmulticolor`, `Constra…`), 29 of the first 150 temporal predictions. The
+  temporal config feeds the model's own past predictions back into the prompt, so the
+  errors compound. Once the prompt exceeds 2048 tokens, it is truncated and the eval
+  crashes with a negative-dimension error.
+- **With `--load-4bit`:** 0 garbled predictions out of 4338, for both checkpoints.
+
+Why the released checkpoint is robust to the merge and the retrained one is not is
+unexplained. Gradient clipping, now active, is the obvious difference in training.
+
+Recommendation: evaluate self-trained QLoRA checkpoints with `--load-4bit`, at least with
+the temporal config. Keep the default (bf16, merged) for comparisons with the published
+numbers, which were produced that way. 4-bit is slower: the full temporal test set took
+11–12 h per checkpoint on an A40, against 5 h in bf16.
+
 ### Not yet verified
 
 - **Comparison against the paper's published table.** This verification establishes
   *original pipeline == modernized pipeline*. It does not establish *either == paper*.
   The 4D-OR takes run without segmasks (see §2), so they deviate from the paper's setup.
-- **Full training.** Only 200 steps (about 1% of a stage-1 epoch) were run per stack. A
-  full stage-1 and stage-2 (temporal curriculum) training, followed by the test-set eval,
-  is what would show whether the modern stack reproduces the released checkpoints.
+- **Full training in the original stack.** Full training was run only in the modern
+  stack (above). Whether an original-stack retraining shows the same bf16 instability is
+  open.
 - **Downstream tasks.** Blocked by the missing `extract_metalabels_for_MMOR.py`.
