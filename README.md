@@ -322,10 +322,28 @@ torch-scatter and open3d are no longer needed.
    ```
    The first run downloads `liuhaotian/llava-v1.5-7b` and `openai/clip-vit-large-patch14-336` from Hugging Face (about 15 GB).
    `--limit-val-batches 20` gives a quick check (a few minutes) before the full test set (543 batches, about 80 minutes on an A40/A6000).
-5. Expected result for this checkpoint on the full test set: combined Macro-F1 about 0.69 (verified runs: 0.691 and 0.687;
+5. Expected result for this checkpoint on the full test set: combined Macro-F1 about 0.69 (verified runs: 0.686 to 0.691;
    4D-OR about 0.90, MM-OR about 0.50). Evaluation is not bit-reproducible, so repeated runs differ by a few thousandths.
    Per-take numbers and the comparison with the original stack are in [MODERNIZATION.md](MODERNIZATION.md#3-verification).
    The temporal checkpoint (`--config mmor_temporal_pred.json`) runs one sample at a time and takes about 5 hours.
 6. Checkpoints you trained yourself with the QLoRA recipe: add `--load-4bit`. This evaluates the model as it was trained
    (4-bit base, LoRA not merged) and avoids a failure where the temporal eval crashes on garbled predictions. It is slower
    (11–12 hours for the temporal test set). Details in [MODERNIZATION.md, "Evaluating in 4-bit"](MODERNIZATION.md#evaluating-in-4-bit).
+7. GPUs with 24 GB (e.g. RTX 4500 Ada, RTX 4090, RTX 3090): the default batch size of 8 fits, but only just. Use batch size 4
+   and the expandable-segments allocator instead:
+   ```bash
+   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=0 python -u -m scene_graph_prediction.main \
+       --config mmor.json --batch-size 4 --model_path LLaVA/checkpoints/<checkpoint>
+   ```
+   Peak GPU memory, measured on the full test set with PyTorch capped at 22.5 GiB (used / incl. allocator cache):
+
+   | run | peak GPU memory | Macro-F1 |
+   |---|---|---|
+   | single frame, batch 8 (default) | 18.4 / 22.5 GiB (cache at the cap) | 0.686 |
+   | single frame, batch 4, expandable segments | 15.9 / 16.5 GiB | 0.689 |
+   | temporal (always batch 1), bf16 | 14.5 / 15.1 GiB | |
+   | temporal, `--load-4bit` | 6.4 / 6.8 GiB | |
+
+   The batch size does not change the scores beyond the run-to-run spread. If the machine is short on system RAM (the
+   eval uses up to about 15 GB with the default 8 data-loader workers), lower `NUM_WORKERS` in
+   `scene_graph_prediction/scene_graph_helpers/configs/mmor.json` and `mmor_temporal_pred.json`.
