@@ -365,8 +365,8 @@ curves, which is expected: Adam is nearly invariant to a uniform gradient scale.
 ### Full training: stage 1 and temporal stage 2
 
 Setup: `train_sgg_full.sh` in the modern stack, the README recipe, one epoch per stage on one
-A40 (stage 1: 82 h, stage 2: 90 h), `--max_grad_norm 0.1` (so, unlike the original,
-clipping is active). Compared with the released checkpoints on the full test set, all
+A40 (stage 1: 82 h, stage 2: 90 h), `MAX_GRAD_NORM=0` (no clipping, which is what the
+original bf16 training effectively did; checked in both stages' `training_args.bin`). Compared with the released checkpoints on the full test set, all
 modern stack:
 
 | model | eval load mode | combined Macro-F1 | 4D-OR | MM-OR |
@@ -398,7 +398,9 @@ close to, but not the same as, the trained one.
 - **With `--load-4bit`:** 0 garbled predictions out of 4338, for both checkpoints.
 
 Why the released checkpoint is robust to the merge and the retrained one is not is
-unexplained. Gradient clipping, now active, is the obvious difference in training.
+unexplained. Gradient clipping is ruled out: neither training clipped. Remaining
+differences include the LoRA init (peft draws different random matrices), the data
+order, and the bitsandbytes/DeepSpeed versions.
 
 Recommendation: evaluate self-trained QLoRA checkpoints with `--load-4bit`, at least with
 the temporal config. Keep the default (bf16, merged) for comparisons with the published
