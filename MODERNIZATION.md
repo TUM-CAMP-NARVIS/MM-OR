@@ -76,7 +76,7 @@ as well. Compare runs by take-level numbers within about ±0.01, not by exact eq
 | `ModuleNotFoundError: torch_scatter` / `open3d` | Code from `master`, not this branch. Check out `modernize/torch29-cu128`. |
 | `FileNotFoundError: .../mm_projector.bin` (or another loading error) | The checkpoint directory was renamed. The loader needs `llava` and `lora` in the directory name to load it as a LoRA adapter on top of `liuhaotian/llava-v1.5-7b`. |
 | Metrics far below §3, quietly | Missing modality folders are skipped without an error (§2). Check that the per-timepoint audio, transcript and segmask folders exist for the test takes. |
-| Temporal eval of a self-trained checkpoint crashes with a negative-dimension error after a few hundred samples, with garbled triplets (`anaesthetistmulticolor`, `Constra…`) in the output | Evaluate with `--load-4bit`. Merged into bf16, the QLoRA model can degenerate, and the temporal prompt (built from its own past predictions) then outgrows 2048 tokens. See §3, "Evaluating in 4-bit". |
+| Temporal eval of a self-trained checkpoint crashes with a negative-dimension error after a few hundred samples, with garbled triplets (`anaesthetistmulticolor`, `Constra…`) in the output | Evaluate with `--load-4bit`. Merged into bf16, the QLoRA model can degenerate, and the temporal prompt (built from its own past predictions) then outgrows 2048 tokens. Starting stage 2 from the released stage-1 checkpoint avoids it. See §3, "Evaluating in 4-bit" and "Cause: our stage-1 checkpoint". |
 | `CUDA driver version is insufficient` / `no kernel image is available` | The driver is too old for cu128 (`nvidia-smi` must report CUDA ≥ 12.8), or the GPU is older than the cu128 wheels support. Verified on A40 and RTX A6000 (sm_86). |
 
 ---
@@ -397,22 +397,86 @@ close to, but not the same as, the trained one.
   crashes with a negative-dimension error.
 - **With `--load-4bit`:** 0 garbled predictions out of 4338, for both checkpoints.
 
-Why the released checkpoint is robust to the merge and the retrained one is not is
-unexplained. Gradient clipping is ruled out: neither training clipped. Remaining
-differences include the LoRA init (peft draws different random matrices), the data
-order, and the bitsandbytes/DeepSpeed versions.
-
 Recommendation: evaluate self-trained QLoRA checkpoints with `--load-4bit`, at least with
 the temporal config. Keep the default (bf16, merged) for comparisons with the published
 numbers, which were produced that way. 4-bit is slower: the full temporal test set took
 11–12 h per checkpoint on an A40, against 5 h in bf16.
+
+#### Cause: our stage-1 checkpoint
+
+To find out why the retrained temporal model breaks in bf16 and the released one does not,
+we measured how much a checkpoint's output changes between the two load modes. The
+checkpoint is loaded in 4-bit and generates on 109 test samples (every 40th). Teacher-forced
+on exactly those outputs, the token distributions of the 4-bit model and the bf16-merged
+model are then compared:
+
+- **Mean KL divergence** KL(4-bit ‖ bf16) per generated token.
+- **Noise floor:** the 4-bit model compared with itself. It is 0.0001 everywhere.
+- **Reference:** the released checkpoints, at 0.005 (temporal) and 0.006 (stage 1).
+
+The retrained temporal model's divergence over its training run:
+
+| stage-2 step | 500 | 2,000 | 3,500 | 5,000 | 7,500 | 10,000 | 12,500 | 15,000 |
+|---|---|---|---|---|---|---|---|---|
+| mean KL | 0.041 | 0.009 | 0.006 | 0.111 | 0.223 | 0.223 | 0.386 | 0.540 |
+| bf16 garbled outputs (of 300) | 0 | | | 0 | | 9 | | 85 |
+
+The jump between steps 3,500 and 5,000 never reverses, and garbled output follows once the
+divergence passes about 0.25. To isolate the cause, we ran three more stage-2 trainings and
+stopped them at about step 5,500 (`MAX_GRAD_NORM=0`, data and recipe as above):
+
+| run | stack | stage-1 start | seed | mean KL at stage-2 step 2,000 / 3,500 / 5,000 / 5,500 |
+|---|---|---|---|---|
+| original retraining | modern | ours | 42 | 0.009 / 0.006 / **0.111** / – |
+| A | modern | ours | 7 | 0.011 / **0.087** / 0.086 / – |
+| B | modern | **released** | 42 | 0.004 / 0.004 / 0.004 / 0.005 |
+| C | **original (2023)** | ours | 42 | 0.028 / 0.026 / 0.057 / **0.112** |
+
+Every run that started from our stage-1 checkpoint drifts, on either stack and with either
+seed. Only the onset varies, from about step 2,500 to 5,000. The run from the released
+stage-1 stays at the released model's level, on the modern stack and with our regenerated
+stage-2 data. This rules out:
+
+- the modern stack (C drifts on the original one),
+- our regenerated stage-2 data (B uses it and stays clean),
+- the seed (A drifts too),
+- gradient clipping (neither training clipped).
+
+The difference is already visible in the stage-1 checkpoints themselves, on single-frame
+inputs (`mmor.json`), even though both score the same Macro-F1:
+
+| stage-1 checkpoint | mean KL, single-frame inputs | mean KL, temporal inputs |
+|---|---|---|
+| released | 0.006 | 0.014 |
+| ours (modern stack, 1 epoch) | 0.046 | 0.089 |
+
+The 200-step stage-1 runs (§3, "Training: 200-step QLoRA runs") show no stack difference
+on single-frame inputs: 0.026 and 0.032 (original stack, seeds 42 and 7) against 0.026 and
+0.030 (modern). These early checkpoints all sit above the released final value, as does
+stage 2 at step 500 (0.041), so they say nothing about where a full run ends up. They only
+show that the two stacks do not diverge in the first 200 steps.
+
+So the property that makes stage 2 drift away from what a bf16 merge can reproduce is already
+present in our stage-1 checkpoint. What made our stage 1 differ from the released one, the
+modern stack or our regenerated stage-1 data, is open. A stage-1 retraining in the original
+stack (82 h) would decide it, and the single-frame KL above tests the result within an hour
+instead of a full stage 2.
+
+Practical consequences:
+
+- To train a temporal model that also evaluates in bf16, start stage 2 from the released
+  stage-1 checkpoint: pass its directory as `--curriculum_learning_weights` (run B above).
+- Otherwise evaluate with `--load-4bit`.
+- Before spending 90 h on stage 2, check the stage-1 checkpoint: a mean KL near the
+  released 0.006 is a good sign, one well above it predicts the bf16 drift. (The measurement
+  script is not part of the repository.)
 
 ### Not yet verified
 
 - **Comparison against the paper's published table.** This verification establishes
   *original pipeline == modernized pipeline*. It does not establish *either == paper*.
   The 4D-OR takes run without segmasks (see §2), so they deviate from the paper's setup.
-- **Full training in the original stack.** Full training was run only in the modern
-  stack (above). Whether an original-stack retraining shows the same bf16 instability is
-  open.
+- **Stage-1 training in the original stack.** Stage 2 in the original stack, started from
+  our stage-1 checkpoint, drifts like the modern one (§3, "Cause: our stage-1 checkpoint").
+  Whether a stage 1 trained in the original stack matches the released checkpoint is open.
 - **Downstream tasks.** Blocked by the missing `extract_metalabels_for_MMOR.py`.
